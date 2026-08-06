@@ -39,6 +39,7 @@ export class WordGenerator {
         if (section.content.length) this.field("Content", section.content);
         section.cards.forEach((card, index) => {
             this.subheading(`Card ${index + 1}`);
+            if (card.label) this.field("Card Number", [card.label]);
             this.field("Card Title", [card.title]);
             if (card.description.length) this.field("Description", card.description);
             if (card.buttons.length) this.field("Button", card.buttons, true);

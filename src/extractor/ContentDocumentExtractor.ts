@@ -1,6 +1,7 @@
 import { Page } from "playwright";
 
 export interface ReviewCard {
+    label?: string;
     title: string;
     description: string[];
     buttons: string[];
@@ -35,9 +36,10 @@ export class ContentDocumentExtractor {
 
     async extract(pageName: string, url: string): Promise<ReviewPage> {
         return this.page.evaluate(({ pageName, url }) => {
-            type Card = { title: string; description: string[]; buttons: string[] };
+            type Card = { label?: string; title: string; description: string[]; buttons: string[] };
             type Table = { headers: string[]; rows: string[][] };
             type Section = { heading: string; content: string[]; buttons: string[]; lists: string[][]; tables: Table[]; cards: Card[] };
+            type ExtractedCard = { card: Card; root: Element };
             const excluded = "script,style,noscript,svg,template,[aria-hidden='true'],[hidden]";
             const normalise = (value: string | null | undefined) => (value ?? "").replace(/\s+/g, " ").trim();
             const unique = (items: string[]) => [...new Set(items.map(normalise).filter(Boolean))];
@@ -50,6 +52,15 @@ export class ContentDocumentExtractor {
             const meaningful = (value: string) => value.length > 1 && !/^(menu|close)$/i.test(value);
             const isIn = (node: Element, area: Element | null) => Boolean(area && area.contains(node));
             const contentText = (root: Element, omit: Element[] = []) => {
+                const blockSelector = "p,li,blockquote,figcaption,td,th,dd,div";
+                const blocks = Array.from(root.querySelectorAll(blockSelector))
+                    .filter(visible)
+                    .filter(block => !omit.some(item => item.contains(block)))
+                    .filter(block => !Array.from(block.querySelectorAll(blockSelector)).some(visible))
+                    .map(block => text(block))
+                    .filter(meaningful);
+                if (blocks.length) return unique(blocks);
+
                 const values: string[] = [];
                 const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
                 let current: Node | null;
@@ -86,20 +97,29 @@ export class ContentDocumentExtractor {
                 }
                 return current;
             };
-            const extractCards = (root: Element): Card[] => {
+            const extractCards = (root: Element): ExtractedCard[] => {
                 const headings = Array.from(root.querySelectorAll("h3,h4,h5,[role='heading'][aria-level='3'],[role='heading'][aria-level='4']"))
                     .filter(visible);
-                const cards: Card[] = [];
+                const cards: ExtractedCard[] = [];
+                const processedRoots: Element[] = [];
                 for (const heading of headings) {
-                    const title = text(heading);
-                    if (!meaningful(title)) continue;
+                    const headingText = text(heading);
+                    if (!meaningful(headingText)) continue;
                     let card: Element = heading.parentElement ?? root;
                     while (card.parentElement && card.parentElement !== root && text(card).length < 30) card = card.parentElement;
-                    const cardText = contentText(card, [heading, ...Array.from(card.querySelectorAll("button,a,[role='button']"))]);
-                    const description = cardText.filter(value => value !== title && !value.includes(title));
-                    if (description.length || controls(card).length) cards.push({ title, description, buttons: controls(card) });
+                    if (processedRoots.includes(card)) continue;
+                    processedRoots.push(card);
+
+                    const cardHeadings = Array.from(card.querySelectorAll("h3,h4,h5,[role='heading'][aria-level='3'],[role='heading'][aria-level='4']"))
+                        .filter(visible);
+                    const isSequenceLabel = (value: string) => /^\d{1,3}[.)-]?$/.test(value);
+                    const label = cardHeadings.map(text).find(isSequenceLabel);
+                    const title = cardHeadings.map(text).find(value => meaningful(value) && !isSequenceLabel(value)) ?? headingText;
+                    const cardText = contentText(card, cardHeadings);
+                    const description = cardText.filter(value => value !== title && value !== label && !value.includes(title));
+                    if (description.length || controls(card).length) cards.push({ card: { label, title, description, buttons: controls(card) }, root: card });
                 }
-                return cards.filter((card, index, all) => all.findIndex(other => other.title === card.title) === index);
+                return cards.filter((item, index, all) => all.findIndex(other => other.card.title === item.card.title) === index);
             };
 
             const header = document.querySelector("header,[role='banner']");
@@ -115,7 +135,7 @@ export class ContentDocumentExtractor {
             const heroRoot = primaryHeading ? candidateContainer(primaryHeading, main) : main;
             const hero = {
                 heading: primaryHeading ? text(primaryHeading) : "",
-                description: primaryHeading ? contentText(heroRoot, [primaryHeading, ...Array.from(heroRoot.querySelectorAll("button,a,[role='button']"))])
+                description: primaryHeading ? contentText(heroRoot, [primaryHeading])
                     .filter(value => value !== text(primaryHeading)).slice(0, 4) : [],
                 buttons: primaryHeading ? controls(heroRoot) : []
             };
@@ -130,19 +150,22 @@ export class ContentDocumentExtractor {
                 if (seen.has(root)) continue;
                 seen.add(root);
                 const nestedHeadings = Array.from(root.querySelectorAll("h1,h2,h3,h4,[role='heading']")).filter(visible);
-                const cards = extractCards(root).filter(card => card.title !== text(heading));
-                const omit = [heading, ...nestedHeadings.filter(item => item !== heading), ...Array.from(root.querySelectorAll("button,a,[role='button'],ul,ol,table"))];
-                const cardValues = new Set(cards.flatMap(card => [card.title, ...card.description]));
+                const extractedCards = extractCards(root).filter(item => item.card.title !== text(heading));
+                const cards = extractedCards.map(item => item.card);
+                const omit = [heading, ...nestedHeadings.filter(item => item !== heading), ...extractedCards.map(item => item.root), ...Array.from(root.querySelectorAll("ul,ol,table"))];
                 const cardButtons = new Set(cards.flatMap(card => card.buttons));
-                const content = contentText(root, omit).filter(value => value !== text(heading) && !cardValues.has(value));
+                const content = contentText(root, omit).filter(value => value !== text(heading));
                 const section: Section = { heading: text(heading), content, buttons: controls(root).filter(button => !cardButtons.has(button)), lists: listValues(root), tables: tableValues(root), cards };
                 if (section.heading || section.content.length || section.buttons.length || section.lists.length || section.tables.length || section.cards.length) sections.push(section);
             }
             // Pages without heading landmarks still receive a single reader-focused content section.
             if (!sections.length) {
-                const omit = [...Array.from(main.querySelectorAll("button,a,[role='button'],ul,ol,table")), ...(primaryHeading ? [primaryHeading] : [])];
+                const omit = [...Array.from(main.querySelectorAll("ul,ol,table")), ...(primaryHeading ? [primaryHeading] : [])];
                 const content = contentText(main, omit).filter(value => value !== hero.heading);
-                if (content.length || controls(main).length) sections.push({ heading: "Content", content, buttons: controls(main), lists: listValues(main), tables: tableValues(main), cards: extractCards(main) });
+                const extractedCards = extractCards(main);
+                const cards = extractedCards.map(item => item.card);
+                const contentWithoutCards = content.filter(value => !cards.some(card => card.title === value || card.description.includes(value)));
+                if (contentWithoutCards.length || controls(main).length) sections.push({ heading: "Content", content: contentWithoutCards, buttons: controls(main), lists: listValues(main), tables: tableValues(main), cards });
             }
             const footer = footerElement ? unique(contentText(footerElement).concat(controls(footerElement))) : [];
             return { pageName, url, navigation, hero, sections, footer };
