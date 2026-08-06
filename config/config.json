@@ -1,0 +1,5 @@
+{
+    "baseUrl": "https://yourwebsite.com",
+    "timeout": 30000,
+    "headless": false
+}
