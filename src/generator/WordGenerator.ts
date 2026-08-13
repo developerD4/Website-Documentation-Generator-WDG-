@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { BorderStyle, Document, HeadingLevel, Packer, Paragraph, PageBreak, Table, TableCell, TableRow, TextRun, WidthType } from "docx";
-import { ReviewPage, ReviewSection, ReviewTable } from "../extractor/ContentDocumentExtractor";
+import { ReviewImage, ReviewPage, ReviewSection, ReviewTable } from "../extractor/ContentDocumentExtractor";
 
 export class WordGenerator {
     private readonly children: (Paragraph | Table)[] = [];
@@ -17,6 +17,7 @@ export class WordGenerator {
         if (page.hero.heading) this.field("Heading", [page.hero.heading]);
         if (page.hero.description.length) this.field("Description", page.hero.description);
         if (page.hero.buttons.length) this.field("Buttons", page.hero.buttons, true);
+        if (page.hero.images.length) this.imageList(page.hero.images);
         page.sections.forEach((section, index) => { this.separator(); this.section(section, index + 1); });
         if (page.footer.length) { this.separator(); this.heading("Footer"); this.bullets(page.footer); }
         this.children.push(new Paragraph({ spacing: { after: 360 } }));
@@ -35,15 +36,18 @@ export class WordGenerator {
 
     private section(section: ReviewSection, number: number): void {
         this.heading(`Section ${number}`);
-        if (section.heading) this.field("Heading", [section.heading]);
-        if (section.content.length) this.field("Content", section.content);
+        if (section.heading && section.heading !== "Content") this.field("Heading", [section.heading]);
+        if (section.content.length || section.cards.length || section.images.length) this.subheading("Content");
         section.cards.forEach((card, index) => {
             this.subheading(`Card ${index + 1}`);
             if (card.label) this.field("Card Number", [card.label]);
             this.field("Card Title", [card.title]);
             if (card.description.length) this.field("Description", card.description);
             if (card.buttons.length) this.field("Button", card.buttons, true);
+            if (card.images.length) this.imageList(card.images);
         });
+        section.content.forEach(value => this.children.push(new Paragraph({ text: value, spacing: { after: 100 } })));
+        if (section.images.length) this.imageList(section.images);
         section.lists.forEach(list => this.field("List", list, true));
         section.tables.forEach(table => { this.subheading("Table"); this.addTable(table); });
         if (section.buttons.length) this.field("Buttons", section.buttons, true);
@@ -53,6 +57,9 @@ export class WordGenerator {
     private subheading(text: string): void { this.children.push(new Paragraph({ heading: HeadingLevel.HEADING_3, spacing: { before: 100, after: 60 }, children: [new TextRun({ text, bold: true })] })); }
     private field(label: string, values: string[], bullet = false): void { this.subheading(label); bullet ? this.bullets(values) : values.forEach(value => this.children.push(new Paragraph({ text: value, spacing: { after: 100 } }))); }
     private bullets(values: string[]): void { values.forEach(value => this.children.push(new Paragraph({ text: value, bullet: { level: 0 }, spacing: { after: 60 } }))); }
+    private imageList(images: ReviewImage[]): void {
+        this.field("Images", images.map(image => image.link ? `Linked image: ${image.alt} (Link: ${image.link})` : `Image: ${image.alt}`), true);
+    }
     private separator(): void { this.children.push(new Paragraph({ border: { bottom: { color: "808080", style: BorderStyle.SINGLE, size: 6, space: 1 } }, spacing: { before: 120, after: 120 } })); }
     private addTable(table: ReviewTable): void {
         const rows = [table.headers, ...table.rows].filter(row => row.length).slice(0, 25);
