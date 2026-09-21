@@ -7,7 +7,7 @@ export function readPages(): PageInfo[] {
     const excelPath = path.join(
         process.cwd(),
         "config",
-        "All_Pages_wvis_new.xlsx"
+        "All_Pages_wvis.xlsx"
     );
 
     const workbook = XLSX.readFile(excelPath);
